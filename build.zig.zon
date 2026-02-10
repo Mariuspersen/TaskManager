@@ -1,0 +1,7 @@
+.{
+    .name = .task_manager,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0-dev.2471+e9eadee00",
+    .paths = .{""},
+    .fingerprint = 0xe5c50f53a85cc452,
+}

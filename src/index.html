@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script src="script.js"></script>
+    <link rel="stylesheet" type="text/css" href="style.css">
+    <title>Task Manager</title>
+</head>
+<body>
+    <button id="showtaskform_btn"></button>
+    <div class="task-form" id="task-form">
+        <button class="close-btn"  id="formCloseBtn">X</button>
+        <label for="task_input">Task: </label> <textarea id="task_input"></textarea>
+        <label for="assignee_input">Assign to: </label> <input id="assignee_input"/>
+        <button onclick="addTaskButtonClicked()">Add Task</button>
+    </div>
+    <div id="tasklist"></div>
+</body>
+</html>

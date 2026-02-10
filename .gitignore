@@ -1,0 +1,4 @@
+tasks
+.zig-cache
+.zigversion
+zig-out
