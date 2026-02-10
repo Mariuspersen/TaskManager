@@ -113,14 +113,23 @@ pub fn main(init: std.process.Init) !void {
             &writer.interface,
         );
 
-        var req = try http.receiveHead();
+        var req = http.receiveHead() catch continue;
         const hashid = hash(req.head.target);
 
         switch (hashid) {
             hash("/") => try req.respond(@embedFile("index.html"), .{}),
             hash("/style.css") => try req.respond(@embedFile("style.css"), .{}),
             hash("/script.js") => try req.respond(@embedFile("script.js"), .{}),
-            hash("/newtask.png") => try req.respond(@embedFile("newtask.png"), .{}),
+            hash("/addtask.svg") => try req.respond(@embedFile("addtask.svg"), .{
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "image/svg+xml" },
+                },
+            }),
+            hash("/changename.svg") => try req.respond(@embedFile("changename.svg"), .{
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "image/svg+xml" },
+                },
+            }),
             hash("/removetask") => block: {
                 var it = req.iterateHeaders();
                 while (it.next()) |h| {

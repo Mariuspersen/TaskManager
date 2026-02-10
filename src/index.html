@@ -7,11 +7,17 @@
 </head>
 <body>
     <button id="showtaskform_btn"></button>
+    <button id="shownameform_btn"></button>
     <div class="task-form" id="task-form">
         <button class="close-btn"  id="formCloseBtn">X</button>
         <label for="task_input">Task: </label> <textarea id="task_input"></textarea>
         <label for="assignee_input">Assign to: </label> <input id="assignee_input"/>
         <button onclick="addTaskButtonClicked()">Add Task</button>
+    </div>
+    <div class="task-form" id="name_form">
+        <button class="close-btn"  id="nameformCloseBtn">X</button>
+        <label for="name_input">Enter your name: </label> <input id="name_input">
+        <button onclick="changeName()">Change Name</button>
     </div>
     <div id="tasklist"></div>
 </body>
