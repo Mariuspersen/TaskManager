@@ -2,6 +2,12 @@
     .name = .task_manager,
     .version = "0.0.1",
     .minimum_zig_version = "0.16.0-dev.2471+e9eadee00",
-    .paths = .{""},
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "README.md",
+        "LICENSE",
+    },
     .fingerprint = 0xe5c50f53a85cc452,
 }

@@ -86,7 +86,7 @@ const Tasks = struct {
     }
 };
 
-const address = net.IpAddress.parse("0.0.0.0", 8080) catch |err| @compileError(err);
+const address = net.IpAddress.parse("0.0.0.0", 430) catch |err| @compileError(err);
 pub fn main(init: std.process.Init) !void {
     const stderr_buf = try init.gpa.alloc(u8, 1024);
     defer init.gpa.free(stderr_buf);
@@ -100,32 +100,32 @@ pub fn main(init: std.process.Init) !void {
     while (server.accept(init.io)) |s| {
         defer s.close(init.io);
 
-        const read_buf = try init.gpa.alloc(u8, 1024);
-        defer init.gpa.free(read_buf);
-        const write_buf = try init.gpa.alloc(u8, 1024);
-        defer init.gpa.free(write_buf);
-
-        var reader = s.reader(init.io, read_buf);
-        var writer = s.writer(init.io, write_buf);
-
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
+        var reader = s.reader(init.io, &read_buf);
+        var writer = s.writer(init.io, &write_buf);
         var http = std.http.Server.init(
             &reader.interface,
             &writer.interface,
         );
 
-        var req = http.receiveHead() catch continue;
+        var req = http.receiveHead() catch |e| {
+            stderr.print("ERROR: {s}\n", .{@errorName(e)}) catch {};
+            stderr.flush() catch {};
+            continue;
+        };
         const hashid = hash(req.head.target);
 
-        switch (hashid) {
-            hash("/") => try req.respond(@embedFile("index.html"), .{}),
-            hash("/style.css") => try req.respond(@embedFile("style.css"), .{}),
-            hash("/script.js") => try req.respond(@embedFile("script.js"), .{}),
-            hash("/addtask.svg") => try req.respond(@embedFile("addtask.svg"), .{
+        _ = switch (hashid) {
+            hash("/") => req.respond(@embedFile("index.html"), .{}),
+            hash("/style.css") => req.respond(@embedFile("style.css"), .{}),
+            hash("/script.js") => req.respond(@embedFile("script.js"), .{}),
+            hash("/addtask.svg") => req.respond(@embedFile("addtask.svg"), .{
                 .extra_headers = &.{
                     .{ .name = "Content-Type", .value = "image/svg+xml" },
                 },
             }),
-            hash("/changename.svg") => try req.respond(@embedFile("changename.svg"), .{
+            hash("/changename.svg") => req.respond(@embedFile("changename.svg"), .{
                 .extra_headers = &.{
                     .{ .name = "Content-Type", .value = "image/svg+xml" },
                 },
@@ -145,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
                 try tasks.saveToFile(init.io, init.gpa);
-                break :block try req.respond("", .{});
+                break :block req.respond("", .{});
             },
             hash("/addtask") => block: {
                 var it = req.iterateHeaders();
@@ -161,7 +161,7 @@ pub fn main(init: std.process.Init) !void {
                 if (tasks.hm.get(hash(task))) |exists| exists.deinit(init.gpa);
                 try tasks.hm.put(hash(task), try .init(init.gpa, task, assignee));
                 try tasks.saveToFile(init.io, init.gpa);
-                break :block try req.respond(task, .{});
+                break :block req.respond(task, .{});
             },
             hash("/listtasks") => block: {
                 var it = tasks.hm.iterator();
@@ -170,11 +170,15 @@ pub fn main(init: std.process.Init) !void {
                 while (it.next()) |entry| {
                     try list.print(init.gpa, "{s}:{s};", .{ entry.value_ptr.text, entry.value_ptr.assignee });
                 }
-                break :block try req.respond(list.items, .{});
+                break :block req.respond(list.items, .{});
             },
-            else => try req.respond("", .{ .status = .not_found }),
-        }
+            else => req.respond("", .{ .status = .not_found }),
+        } catch |e| {
+            stderr.print("ERROR: {s}\n", .{@errorName(e)}) catch {};
+            stderr.flush() catch {};
+        };
     } else |e| {
         try stderr.print("ERROR: {s}\n", .{@errorName(e)});
+        try stderr.flush();
     }
 }

@@ -1,3 +1,4 @@
+const REFRESH_RATE = 10000;
 async function main() {
   const showform_btn = document.getElementById("showtaskform_btn");
   const showname_btn = document.getElementById("shownameform_btn");
@@ -9,13 +10,14 @@ async function main() {
   showform_btn.onclick = toggleForm;
   showname_btn.onclick = toggleNameForm;
   const name = window.localStorage.getItem("taskmanager_name")
-  if(name) {
+  if (name) {
     name_input.value = name;
   }
   else {
     toggleNameForm();
   }
   await showlist();
+  setInterval(showlist, REFRESH_RATE);
 }
 
 async function nameCloseForm() {
@@ -50,7 +52,12 @@ async function sendText(route, text) {
   const res = await fetch(route, {
     method: 'POST',
     body: text
-  });
+  }).then(r => {
+    if (r.status >= 400 && r.status < 600) {
+      showError("Server connection lost!")
+    }
+    return r;
+  }).catch(e => showError(e));
   return await res.text();
 }
 
@@ -71,7 +78,7 @@ async function removeTask(task) {
 async function changeName() {
   const showform_btn = document.getElementById("name_form");
   const name_input = document.getElementById("name_input");
-  window.localStorage.setItem("taskmanager_name",name_input.value)
+  window.localStorage.setItem("taskmanager_name", name_input.value)
   location.reload();
 }
 
@@ -82,9 +89,30 @@ async function addTaskButtonClicked() {
   location.reload();
 }
 
+async function showError(e) {
+  const ERROR_NAME = "error_popup";
+  const show_error = document.createElement('p');
+  show_error.className = ERROR_NAME;
+  show_error.id = ERROR_NAME;
+  show_error.innerText = e;
+  setTimeout(() => {
+    const e = document.getElementById(ERROR_NAME);
+    const body = document.getElementById("body");
+    body.removeChild(e);
+
+  }, REFRESH_RATE)
+
+  const body = document.getElementById("body");
+  body.appendChild(show_error);
+}
+
 async function showlist() {
-  const tasks = await sendText("listtasks", "");
-  const tasklist_element = document.getElementById("tasklist");
+  const tasks = await sendText("listtasks", "")
+
+  const new_tasklist_element = document.createElement("div");
+  const old_tasklist_element = document.getElementById("tasklist");
+
+  new_tasklist_element.id = old_tasklist_element.id;
 
   tasks.split(";").forEach(task => {
     if (task.length == 0) return;
@@ -109,7 +137,7 @@ async function showlist() {
     assign_button.innerText = "Reassign to me";
     assign_button.className = "reassign_button";
     assign_button.onclick = async () => {
-      await addTask(split_task[0],window.localStorage.getItem("taskmanager_name"))
+      await addTask(split_task[0], window.localStorage.getItem("taskmanager_name"))
       location.reload();
     }
 
@@ -117,7 +145,9 @@ async function showlist() {
     task_div.appendChild(asignee_element);
     task_div.appendChild(finish_button);
     task_div.appendChild(assign_button);
-    tasklist_element.appendChild(task_div);
+    new_tasklist_element.appendChild(task_div);
+
+    old_tasklist_element.replaceWith(new_tasklist_element);
   })
 }
 

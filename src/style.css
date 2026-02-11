@@ -185,3 +185,18 @@ body {
 .task button:hover {
     filter: brightness(100%);
 }
+
+.error_popup {
+    color: #f00;
+    position: absolute;
+    background: #400;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 30px;
+    padding: 30px;
+    border: #c00;
+    border-radius: 30px;
+    font-size: x-large;
+    z-index: 1000;
+}
