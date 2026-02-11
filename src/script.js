@@ -4,8 +4,10 @@ async function main() {
   const showname_btn = document.getElementById("shownameform_btn");
   const name_input = document.getElementById("name_input");
   const closeform_btn = document.getElementById("formCloseBtn");
+  const cloe_reassign_form_btn = document.getElementById("assignformCloseBtn");
   const namecloseform_btn = document.getElementById("nameformCloseBtn");
   closeform_btn.onclick = closeForm;
+  cloe_reassign_form_btn.onclick = assignformClose;
   namecloseform_btn.onclick = nameCloseForm;
   showform_btn.onclick = toggleForm;
   showname_btn.onclick = toggleNameForm;
@@ -39,6 +41,11 @@ async function toggleForm() {
   const task_form_div = document.getElementById("task-form");
   showform_btn.hidden = !showform_btn.hidden;
   task_form_div.style = "display: flex";
+}
+
+async function assignformClose() {
+  const assign_to_form = document.getElementById("assign_to_form");
+  assign_to_form.style = "display: none";
 }
 
 async function toggleNameForm() {
@@ -141,18 +148,40 @@ async function showlist() {
       await removeTask(split_task[0]);
       await showlist()
     };
-    const assign_button = document.createElement('button');
-    assign_button.innerText = "Reassign to me";
-    assign_button.className = "reassign_button";
-    assign_button.onclick = async () => {
-      await addTask(split_task[0], window.localStorage.getItem("taskmanager_name"))
-      await showlist()
+    const assign_to_button = document.createElement('button');
+    assign_to_button.innerText = "Reassign";
+    assign_to_button.className = "reassign_to_button";
+    assign_to_button.onclick = async () => {
+      const assign_to_form = document.getElementById("assign_to_form")
+      const assign_to_confirm_btn = document.getElementById("assign_form_btn");
+      const assign_to_me_btn = document.getElementById("assign_to_me_btn");
+      assign_to_form.style = "display: flex";
+
+      assign_to_me_btn.onclick = async () => {
+        await addTask(split_task[0], window.localStorage.getItem("taskmanager_name"));
+        const assign_to_form = document.getElementById("assign_to_form")
+        assign_to_form.style = "display: none";
+        await showlist();
+      }
+      
+      assign_to_confirm_btn.onclick = async () => {
+        const assignment_name_input = document.getElementById("assignment_name_input");
+        await addTask(split_task[0], assignment_name_input.value);
+        const assign_to_form = document.getElementById("assign_to_form")
+        assign_to_form.style = "display: none";
+        await showlist();
+      };
+
     }
+
+    const button_container = document.createElement("div");
+    button_container.className = "button_container";
+    button_container.appendChild(finish_button);
+    button_container.appendChild(assign_to_button);
 
     task_div.appendChild(task_element);
     task_div.appendChild(asignee_element);
-    task_div.appendChild(finish_button);
-    task_div.appendChild(assign_button);
+    task_div.appendChild(button_container);
     new_tasklist_element.appendChild(task_div);
 
     old_tasklist_element.replaceWith(new_tasklist_element);

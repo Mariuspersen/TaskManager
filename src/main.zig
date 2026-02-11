@@ -176,15 +176,11 @@ fn handleConnection(
                 }
             }
             const ERROR_TEXT = "ERROR: Special characters not allowed!";
-            for (task) |char| if (!std.ascii.isAscii(char)) {
-                break :block try req.respond(ERROR_TEXT, .{
-                    .status = .not_acceptable
-                });
+            for (task) |char| if (!std.ascii.isAscii(char) or char == ';') {
+                break :block try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
-            for (assignee) |char| if (!std.ascii.isAscii(char)) {
-                break :block try req.respond(ERROR_TEXT, .{
-                    .status = .not_acceptable
-                });
+            for (assignee) |char| if (!std.ascii.isAscii(char) or char == ';') {
+                break :block try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
             if (tasks.hm.get(hash(task))) |exists| exists.deinit(alloc);
             try tasks.hm.put(hash(task), try .init(alloc, task, assignee));
