@@ -141,7 +141,7 @@ body {
     flex-wrap: wrap;
     max-width: 500px;
     align-content: stretch;
-    justify-content: center;
+    justify-content: space-between;
     align-items: stretch;
     padding: 16px 16px 5px;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
