@@ -99,86 +99,107 @@ pub fn main(init: std.process.Init) !void {
     var server = try address.listen(init.io, .{ .reuse_address = true });
     while (server.accept(init.io)) |s| {
         defer s.close(init.io);
-
-        var read_buf: [4096]u8 = undefined;
-        var write_buf: [4096]u8 = undefined;
-        var reader = s.reader(init.io, &read_buf);
-        var writer = s.writer(init.io, &write_buf);
-        var http = std.http.Server.init(
-            &reader.interface,
-            &writer.interface,
-        );
-
-        var req = http.receiveHead() catch |e| {
+        handleConnection(
+            init.io,
+            init.gpa,
+            s,
+            &tasks,
+        ) catch |e| {
             stderr.print("ERROR: {s}\n", .{@errorName(e)}) catch {};
             stderr.flush() catch {};
             continue;
         };
-        const hashid = hash(req.head.target);
-
-        _ = switch (hashid) {
-            hash("/") => req.respond(@embedFile("index.html"), .{}),
-            hash("/style.css") => req.respond(@embedFile("style.css"), .{}),
-            hash("/script.js") => req.respond(@embedFile("script.js"), .{}),
-            hash("/addtask.svg") => req.respond(@embedFile("addtask.svg"), .{
-                .extra_headers = &.{
-                    .{ .name = "Content-Type", .value = "image/svg+xml" },
-                },
-            }),
-            hash("/changename.svg") => req.respond(@embedFile("changename.svg"), .{
-                .extra_headers = &.{
-                    .{ .name = "Content-Type", .value = "image/svg+xml" },
-                },
-            }),
-            hash("/removetask") => block: {
-                var it = req.iterateHeaders();
-                while (it.next()) |h| {
-                    switch (hash(h.name)) {
-                        hash("task") => {
-                            const id = hash(h.value);
-                            if (tasks.hm.get(id)) |entry| {
-                                entry.deinit(init.gpa);
-                                _ = tasks.hm.remove(id);
-                            }
-                        },
-                        else => {},
-                    }
-                }
-                try tasks.saveToFile(init.io, init.gpa);
-                break :block req.respond("", .{});
-            },
-            hash("/addtask") => block: {
-                var it = req.iterateHeaders();
-                var task: []const u8 = undefined;
-                var assignee: []const u8 = undefined;
-                while (it.next()) |h| {
-                    switch (hash(h.name)) {
-                        hash("task") => task = h.value,
-                        hash("assignee") => assignee = h.value,
-                        else => {},
-                    }
-                }
-                if (tasks.hm.get(hash(task))) |exists| exists.deinit(init.gpa);
-                try tasks.hm.put(hash(task), try .init(init.gpa, task, assignee));
-                try tasks.saveToFile(init.io, init.gpa);
-                break :block req.respond(task, .{});
-            },
-            hash("/listtasks") => block: {
-                var it = tasks.hm.iterator();
-                var list = try std.ArrayList(u8).initCapacity(init.gpa, 1024);
-                defer list.deinit(init.gpa);
-                while (it.next()) |entry| {
-                    try list.print(init.gpa, "{s}:{s};", .{ entry.value_ptr.text, entry.value_ptr.assignee });
-                }
-                break :block req.respond(list.items, .{});
-            },
-            else => req.respond("", .{ .status = .not_found }),
-        } catch |e| {
-            stderr.print("ERROR: {s}\n", .{@errorName(e)}) catch {};
-            stderr.flush() catch {};
-        };
     } else |e| {
         try stderr.print("ERROR: {s}\n", .{@errorName(e)});
         try stderr.flush();
+    }
+}
+
+fn handleConnection(
+    io: std.Io,
+    alloc: Allocator,
+    s: net.Stream,
+    tasks: *Tasks,
+) !void {
+    var read_buf: [4096]u8 = undefined;
+    var write_buf: [4096]u8 = undefined;
+    var reader = s.reader(io, &read_buf);
+    var writer = s.writer(io, &write_buf);
+    var http = std.http.Server.init(
+        &reader.interface,
+        &writer.interface,
+    );
+
+    var req = try http.receiveHead();
+    const hashid = hash(req.head.target);
+
+    switch (hashid) {
+        hash("/") => try req.respond(@embedFile("index.html"), .{}),
+        hash("/style.css") => try req.respond(@embedFile("style.css"), .{}),
+        hash("/script.js") => try req.respond(@embedFile("script.js"), .{}),
+        hash("/addtask.svg") => try req.respond(@embedFile("addtask.svg"), .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "image/svg+xml" },
+            },
+        }),
+        hash("/changename.svg") => try req.respond(@embedFile("changename.svg"), .{
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "image/svg+xml" },
+            },
+        }),
+        hash("/removetask") => block: {
+            var it = req.iterateHeaders();
+            while (it.next()) |h| {
+                switch (hash(h.name)) {
+                    hash("task") => {
+                        const id = hash(h.value);
+                        if (tasks.hm.get(id)) |entry| {
+                            entry.deinit(alloc);
+                            _ = tasks.hm.remove(id);
+                        }
+                    },
+                    else => {},
+                }
+            }
+            try tasks.saveToFile(io, alloc);
+            break :block try req.respond("", .{});
+        },
+        hash("/addtask") => block: {
+            var it = req.iterateHeaders();
+            var task: []const u8 = undefined;
+            var assignee: []const u8 = undefined;
+            while (it.next()) |h| {
+                switch (hash(h.name)) {
+                    hash("task") => task = h.value,
+                    hash("assignee") => assignee = h.value,
+                    else => {},
+                }
+            }
+            const ERROR_TEXT = "ERROR: Special characters not allowed!";
+            for (task) |char| if (!std.ascii.isAscii(char)) {
+                break :block try req.respond(ERROR_TEXT, .{
+                    .status = .not_acceptable
+                });
+            };
+            for (assignee) |char| if (!std.ascii.isAscii(char)) {
+                break :block try req.respond(ERROR_TEXT, .{
+                    .status = .not_acceptable
+                });
+            };
+            if (tasks.hm.get(hash(task))) |exists| exists.deinit(alloc);
+            try tasks.hm.put(hash(task), try .init(alloc, task, assignee));
+            try tasks.saveToFile(io, alloc);
+            break :block try req.respond(task, .{});
+        },
+        hash("/listtasks") => block: {
+            var it = tasks.hm.iterator();
+            var list_buf: [4096]u8 = undefined;
+            var list = std.Io.Writer.fixed(&list_buf);
+            while (it.next()) |entry| {
+                try list.print("{s}:{s};", .{ entry.value_ptr.text, entry.value_ptr.assignee });
+            }
+            break :block try req.respond(list.buffered(), .{});
+        },
+        else => try req.respond("", .{ .status = .not_found }),
     }
 }

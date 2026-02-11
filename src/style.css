@@ -198,5 +198,5 @@ body {
     border: #c00;
     border-radius: 30px;
     font-size: x-large;
-    z-index: 1000;
+    z-index: 3000;
 }

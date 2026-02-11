@@ -65,7 +65,14 @@ async function addTask(task, assignee) {
   await fetch("addtask", {
     method: 'POST',
     headers: { 'task': task, 'assignee': assignee },
-  })
+  }).then(r => {
+    if (r.status == 406) {
+      r.text().then(t => {
+        showError(t)
+      })
+    }
+    return r;
+  }).catch(e => showError(e));
 }
 
 async function removeTask(task) {
@@ -79,14 +86,15 @@ async function changeName() {
   const showform_btn = document.getElementById("name_form");
   const name_input = document.getElementById("name_input");
   window.localStorage.setItem("taskmanager_name", name_input.value)
-  location.reload();
+  await nameCloseForm();
 }
 
 async function addTaskButtonClicked() {
   const task_element = document.getElementById("task_input");
   const asignee_element = document.getElementById("assignee_input");
   await addTask(task_element.value, asignee_element.value);
-  location.reload();
+  await showlist()
+  await closeForm()
 }
 
 async function showError(e) {
@@ -131,14 +139,14 @@ async function showlist() {
     finish_button.className = "complete_button";
     finish_button.onclick = async () => {
       await removeTask(split_task[0]);
-      location.reload();
+      await showlist()
     };
     const assign_button = document.createElement('button');
     assign_button.innerText = "Reassign to me";
     assign_button.className = "reassign_button";
     assign_button.onclick = async () => {
       await addTask(split_task[0], window.localStorage.getItem("taskmanager_name"))
-      location.reload();
+      await showlist()
     }
 
     task_div.appendChild(task_element);
