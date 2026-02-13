@@ -2,8 +2,11 @@ const std = @import("std");
 const net = std.Io.net;
 
 const Allocator = std.mem.Allocator;
+const Cancelable = std.Io.Cancelable;
 
 const hash = std.hash.Crc32.hash;
+
+const ERROR_FMT = "ERROR: {s}\n";
 
 const Task = struct {
     text: []const u8,
@@ -88,6 +91,12 @@ const Tasks = struct {
 
 const address = net.IpAddress.parse("0.0.0.0", 430) catch |err| @compileError(err);
 pub fn main(init: std.process.Init) !void {
+    var threaded = std.Io.Threaded.init(init.gpa, .{ .environ = .empty });
+    defer threaded.deinit();
+    const io = threaded.io();
+    var group = std.Io.Group.init;
+    defer group.cancel(io);
+
     const stderr_buf = try init.gpa.alloc(u8, 1024);
     defer init.gpa.free(stderr_buf);
     var stderr_writer = std.Io.File.stderr().writer(init.io, stderr_buf);
@@ -97,21 +106,18 @@ pub fn main(init: std.process.Init) !void {
     defer tasks.deinit(init.gpa);
 
     var server = try address.listen(init.io, .{ .reuse_address = true });
-    while (server.accept(init.io)) |s| {
-        defer s.close(init.io);
-        handleConnection(
-            init.io,
-            init.gpa,
-            s,
-            &tasks,
-        ) catch |e| {
-            stderr.print("ERROR: {s}\n", .{@errorName(e)}) catch {};
+    while (true) {
+        var accept = io.async(net.Server.accept, .{ &server, io });
+        defer _ = accept.cancel(io) catch |e| {
+            stderr.print(ERROR_FMT, .{@errorName(e)}) catch {};
+            stderr.flush() catch {};
+        };
+        const stream = accept.await(io) catch |e| {
+            stderr.print(ERROR_FMT, .{@errorName(e)}) catch {};
             stderr.flush() catch {};
             continue;
         };
-    } else |e| {
-        try stderr.print("ERROR: {s}\n", .{@errorName(e)});
-        try stderr.flush();
+        group.async(io, handleConnection, .{ io, init.gpa, stream, &tasks, stderr });
     }
 }
 
@@ -120,7 +126,10 @@ fn handleConnection(
     alloc: Allocator,
     s: net.Stream,
     tasks: *Tasks,
-) !void {
+    w: *std.Io.Writer,
+) void {
+    defer s.close(io);
+
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
     var reader = s.reader(io, &read_buf);
@@ -130,19 +139,23 @@ fn handleConnection(
         &writer.interface,
     );
 
-    var req = try http.receiveHead();
+    var req = http.receiveHead() catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+        return;
+    };
     const hashid = hash(req.head.target);
 
-    switch (hashid) {
-        hash("/") => try req.respond(@embedFile("index.html"), .{}),
-        hash("/style.css") => try req.respond(@embedFile("style.css"), .{}),
-        hash("/script.js") => try req.respond(@embedFile("script.js"), .{}),
-        hash("/addtask.svg") => try req.respond(@embedFile("addtask.svg"), .{
+    const result = switch (hashid) {
+        hash("/") => req.respond(@embedFile("index.html"), .{}),
+        hash("/style.css") => req.respond(@embedFile("style.css"), .{}),
+        hash("/script.js") => req.respond(@embedFile("script.js"), .{}),
+        hash("/addtask.svg") => req.respond(@embedFile("addtask.svg"), .{
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "image/svg+xml" },
             },
         }),
-        hash("/changename.svg") => try req.respond(@embedFile("changename.svg"), .{
+        hash("/changename.svg") => req.respond(@embedFile("changename.svg"), .{
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "image/svg+xml" },
             },
@@ -161,8 +174,8 @@ fn handleConnection(
                     else => {},
                 }
             }
-            try tasks.saveToFile(io, alloc);
-            break :block try req.respond("", .{});
+            tasks.saveToFile(io, alloc) catch |e| break :block e;
+            break :block req.respond("", .{});
         },
         hash("/addtask") => block: {
             var it = req.iterateHeaders();
@@ -177,25 +190,36 @@ fn handleConnection(
             }
             const ERROR_TEXT = "ERROR: Special characters not allowed!";
             for (task) |char| if (!std.ascii.isAscii(char) or char == ';') {
-                break :block try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
+                break :block req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
             for (assignee) |char| if (!std.ascii.isAscii(char) or char == ';') {
-                break :block try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
+                break :block req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
             if (tasks.hm.get(hash(task))) |exists| exists.deinit(alloc);
-            try tasks.hm.put(hash(task), try .init(alloc, task, assignee));
-            try tasks.saveToFile(io, alloc);
-            break :block try req.respond(task, .{});
+            tasks.hm.put(
+                hash(task),
+                Task.init(alloc, task, assignee) catch |e| break :block e,
+            ) catch |e| break :block e;
+            tasks.saveToFile(io, alloc) catch |e| break :block e;
+            break :block req.respond(task, .{});
         },
         hash("/listtasks") => block: {
             var it = tasks.hm.iterator();
             var list_buf: [4096]u8 = undefined;
             var list = std.Io.Writer.fixed(&list_buf);
             while (it.next()) |entry| {
-                try list.print("{s}:{s};", .{ entry.value_ptr.text, entry.value_ptr.assignee });
+                list.print("{s}:{s};", .{
+                    entry.value_ptr.text,
+                    entry.value_ptr.assignee,
+                }) catch |e| break :block e;
             }
-            break :block try req.respond(list.buffered(), .{});
+            break :block req.respond(list.buffered(), .{});
         },
-        else => try req.respond("", .{ .status = .not_found }),
-    }
+        else => req.respond("", .{ .status = .not_found }),
+    };
+    result catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+        return;
+    };
 }
