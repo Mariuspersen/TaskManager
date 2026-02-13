@@ -91,11 +91,13 @@ fn handleConnection(
             var it = req.iterateHeaders();
             while (it.next()) |h| {
                 switch (hash(h.name)) {
-                    hash("task") => tasks.removeTask(alloc, h.value),
+                    hash("task") => {
+                        tasks.removeTask(alloc, h.value);
+                        tasks.saveToFile(io, alloc) catch |e| break :block e;
+                    },
                     else => {},
                 }
             }
-            tasks.saveToFile(io, alloc) catch |e| break :block e;
             break :block req.respond("", .{});
         },
         hash("/addtask") => block: {

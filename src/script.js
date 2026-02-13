@@ -69,7 +69,7 @@ async function sendText(route, text) {
 }
 
 async function addTask(task, assignee) {
-  await fetch("addtask", {
+  return await fetch("addtask", {
     method: 'POST',
     headers: { 'task': task, 'assignee': assignee },
   }).then(r => {
@@ -83,7 +83,7 @@ async function addTask(task, assignee) {
 }
 
 async function removeTask(task) {
-  await fetch("removetask", {
+  return await fetch("removetask", {
     method: 'POST',
     headers: { 'task': task },
   })
