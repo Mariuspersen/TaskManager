@@ -6,6 +6,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
+    const config = b.addModule("config", .{
+        .root_source_file = b.path("build.zig.zon"),
+    });
+
     const main = b.addModule(name, .{
         .optimize = optimize,
         .target = target,
@@ -16,6 +20,8 @@ pub fn build(b: *std.Build) void {
         .name = name,
         .root_module = main
     });
+    exe.root_module.addImport("config", config);
+    
     const install = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install.step);
 }

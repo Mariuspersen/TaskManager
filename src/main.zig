@@ -1,6 +1,8 @@
 const std = @import("std");
 const net = std.Io.net;
 
+const Config = @import("config");
+
 const Allocator = std.mem.Allocator;
 const Cancelable = std.Io.Cancelable;
 
@@ -27,8 +29,6 @@ const Task = struct {
 
 const Tasks = struct {
     hm: std.AutoHashMap(u32, Task),
-    const ENDIANESS: std.builtin.Endian = .little;
-    const FILENAME = "tasks";
 
     pub fn init(alloc: Allocator) !Tasks {
         return .{
@@ -46,7 +46,7 @@ const Tasks = struct {
 
     pub fn saveToFile(self: *Tasks, io: std.Io, alloc: Allocator) !void {
         var it = self.hm.iterator();
-        var f = try std.Io.Dir.cwd().createFile(io, FILENAME, .{});
+        var f = try std.Io.Dir.cwd().createFile(io, Config.filename, .{});
         defer f.close(io);
 
         const buffer = try alloc.alloc(u8, 1024);
@@ -57,17 +57,17 @@ const Tasks = struct {
         defer writer.flush() catch {};
 
         while (it.next()) |entry| {
-            try writer.writeInt(u32, entry.key_ptr.*, ENDIANESS);
-            try writer.writeInt(usize, entry.value_ptr.assignee.len, ENDIANESS);
+            try writer.writeInt(u32, entry.key_ptr.*, Config.endianess);
+            try writer.writeInt(usize, entry.value_ptr.assignee.len, Config.endianess);
             try writer.writeAll(entry.value_ptr.assignee);
-            try writer.writeInt(usize, entry.value_ptr.text.len, ENDIANESS);
+            try writer.writeInt(usize, entry.value_ptr.text.len, Config.endianess);
             try writer.writeAll(entry.value_ptr.text);
         }
     }
 
     pub fn initFromFile(io: std.Io, alloc: Allocator) !Tasks {
         var tasks: Tasks = try .init(alloc);
-        var f = try std.Io.Dir.cwd().openFile(io, FILENAME, .{});
+        var f = try std.Io.Dir.cwd().openFile(io, Config.filename, .{});
         defer f.close(io);
 
         const buffer = try alloc.alloc(u8, 1024);
@@ -77,10 +77,10 @@ const Tasks = struct {
         const reader = &fr.interface;
 
         while (true) {
-            const key = reader.takeInt(u32, ENDIANESS) catch break;
-            const assignee_len = reader.takeInt(usize, ENDIANESS) catch break;
+            const key = reader.takeInt(u32, Config.endianess) catch break;
+            const assignee_len = reader.takeInt(usize, Config.endianess) catch break;
             const asignee_slice = reader.take(assignee_len) catch break;
-            const task_len = reader.takeInt(usize, ENDIANESS) catch break;
+            const task_len = reader.takeInt(usize, Config.endianess) catch break;
             const task_slice = reader.take(task_len) catch break;
             const task = Task.init(alloc, task_slice, asignee_slice) catch break;
             tasks.hm.put(key, task) catch break;
@@ -89,23 +89,26 @@ const Tasks = struct {
     }
 };
 
-const address = net.IpAddress.parse("0.0.0.0", 430) catch |err| @compileError(err);
-pub fn main(init: std.process.Init) !void {
-    var threaded = std.Io.Threaded.init(init.gpa, .{ .environ = .empty });
+const address = net.IpAddress.parse(Config.ip, Config.port) catch |err| @compileError(err);
+pub fn main(init: std.process.Init.Minimal) !void {
+    const alloc = std.heap.smp_allocator;
+
+    var threaded = std.Io.Threaded.init(alloc, .{ .environ = init.environ });
     defer threaded.deinit();
     const io = threaded.io();
     var group = std.Io.Group.init;
     defer group.cancel(io);
 
-    const stderr_buf = try init.gpa.alloc(u8, 1024);
-    defer init.gpa.free(stderr_buf);
-    var stderr_writer = std.Io.File.stderr().writer(init.io, stderr_buf);
+    const stderr_buf = try alloc.alloc(u8, 1024);
+    defer alloc.free(stderr_buf);
+    var stderr_writer = std.Io.File.stderr().writer(io, stderr_buf);
     const stderr = &stderr_writer.interface;
 
-    var tasks = Tasks.initFromFile(init.io, init.gpa) catch try Tasks.init(init.gpa);
-    defer tasks.deinit(init.gpa);
+    var tasks = Tasks.initFromFile(io, alloc) catch try Tasks.init(alloc);
+    defer tasks.deinit(alloc);
 
-    var server = try address.listen(init.io, .{ .reuse_address = true });
+    var server = try address.listen(io, .{ .reuse_address = true });
+    defer server.deinit(io);
     while (true) {
         var accept = io.async(net.Server.accept, .{ &server, io });
         defer _ = accept.cancel(io) catch |e| {
@@ -117,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
             stderr.flush() catch {};
             continue;
         };
-        group.async(io, handleConnection, .{ io, init.gpa, stream, &tasks, stderr });
+        group.async(io, handleConnection, .{ io, alloc, stream, &tasks, stderr });
     }
 }
 
@@ -147,9 +150,10 @@ fn handleConnection(
     const hashid = hash(req.head.target);
 
     const result = switch (hashid) {
-        hash("/") => req.respond(@embedFile("index.html"), .{}),
+        hash("/"), hash("/index.html") => req.respond(@embedFile("index.html"), .{}),
         hash("/style.css") => req.respond(@embedFile("style.css"), .{}),
         hash("/script.js") => req.respond(@embedFile("script.js"), .{}),
+        hash("/favicon.ico") => req.respond(@embedFile("favicon.ico"), .{}),
         hash("/addtask.svg") => req.respond(@embedFile("addtask.svg"), .{
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "image/svg+xml" },
