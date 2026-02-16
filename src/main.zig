@@ -61,7 +61,7 @@ fn handleConnectionWithTimeout(
     _ = std.Io.select(io, .{
         &conn,
         &timeout,
-    });
+    }) catch {};
 }
 
 fn timeoutConnection(
