@@ -43,24 +43,58 @@ pub fn main(init: std.process.Init.Minimal) !void {
             stderr.flush() catch {};
             continue;
         };
-        group.async(io, handleConnection, .{ io, alloc, stream, &tasks, stderr });
+        group.async(
+            io,
+            handleConnectionWithTimeout,
+            .{ io, alloc, stream, &tasks, stderr },
+        );
     }
+}
+
+fn handleConnectionWithTimeout(
+    io: std.Io,
+    alloc: Allocator,
+    s: net.Stream,
+    tasks: *Tasks,
+    w: *std.Io.Writer,
+) void {
+    var conn = io.concurrent(
+        handleConnection,
+        .{ io, alloc, s, tasks },
+    ) catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+        return;
+    };
+    defer conn.cancel(io) catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+    };
+    var timeout = io.concurrent(
+        timeoutConnection,
+        .{ io, &conn },
+    ) catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+        return;
+    };
+    timeout.await(io) catch |e| {
+        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+        w.flush() catch {};
+        return;
+    };
 }
 
 fn timeoutConnection(
     io: std.Io,
-    s: net.Stream,
+    future: *std.Io.Future(@typeInfo(@TypeOf(handleConnection)).@"fn".return_type.?),
 ) !void {
-    defer s.close(io);
     const to = try std.Io.Timeout.toDurationFromNow(.{ .duration = .{
-        .raw = .fromSeconds(5),
+        .raw = .fromSeconds(Config.secs_timeout),
         .clock = std.Io.Clock.real,
     } }, io) orelse return error.NullDuration;
-    var timeout = io.async(std.Io.Clock.Duration.sleep, .{
-        to,
-        io,
-    });
-    try timeout.await(io);
+    try to.sleep(io);
+    try future.cancel(io);
 }
 
 fn handleConnection(
@@ -68,18 +102,8 @@ fn handleConnection(
     alloc: Allocator,
     s: net.Stream,
     tasks: *Tasks,
-    w: *std.Io.Writer,
-) void {
-    var to = io.async(timeoutConnection, .{ io, s });
-    defer _ = to.cancel(io) catch |e| {
-        switch (e) {
-            error.Canceled => {},
-            else => {
-                w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-                w.flush() catch {};
-            },
-        }
-    };
+) !void {
+    defer s.close(io);
 
     var s_read_buf: [4096]u8 = undefined;
     var s_write_buf: [4096]u8 = undefined;
@@ -90,42 +114,38 @@ fn handleConnection(
         &s_writer.interface,
     );
 
-    var req = http.receiveHead() catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-        return;
-    };
+    var req = try http.receiveHead();
     const hashid = hash(req.head.target);
 
-    const result = switch (hashid) {
-        hash("/"), hash("/index.html") => req.respond(@embedFile("index.html"), .{}),
-        hash("/style.css") => req.respond(@embedFile("style.css"), .{}),
-        hash("/script.js") => req.respond(@embedFile("script.js"), .{}),
-        hash("/favicon.ico") => req.respond(@embedFile("favicon.ico"), .{}),
-        hash("/addtask.svg") => req.respond(@embedFile("addtask.svg"), .{
+    switch (hashid) {
+        hash("/"), hash("/index.html") => try req.respond(@embedFile("index.html"), .{}),
+        hash("/style.css") => try req.respond(@embedFile("style.css"), .{}),
+        hash("/script.js") => try req.respond(@embedFile("script.js"), .{}),
+        hash("/favicon.ico") => try req.respond(@embedFile("favicon.ico"), .{}),
+        hash("/addtask.svg") => try req.respond(@embedFile("addtask.svg"), .{
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "image/svg+xml" },
             },
         }),
-        hash("/changename.svg") => req.respond(@embedFile("changename.svg"), .{
+        hash("/changename.svg") => try req.respond(@embedFile("changename.svg"), .{
             .extra_headers = &.{
                 .{ .name = "Content-Type", .value = "image/svg+xml" },
             },
         }),
-        hash("/removetask") => block: {
+        hash("/removetask") => {
             var it = req.iterateHeaders();
             while (it.next()) |h| {
                 switch (hash(h.name)) {
                     hash("task") => {
                         tasks.removeTask(alloc, h.value);
-                        tasks.saveToFile(io, alloc) catch |e| break :block e;
+                        try tasks.saveToFile(io, alloc);
                     },
                     else => {},
                 }
             }
-            break :block req.respond("", .{});
+            try req.respond("", .{});
         },
-        hash("/addtask") => block: {
+        hash("/addtask") => {
             var it = req.iterateHeaders();
             var task: []const u8 = undefined;
             var assignee: []const u8 = undefined;
@@ -138,27 +158,22 @@ fn handleConnection(
             }
             const ERROR_TEXT = "ERROR: Special characters not allowed!";
             for (task) |char| if (!std.ascii.isAscii(char) or char == ';') {
-                break :block req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
+                try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
             for (assignee) |char| if (!std.ascii.isAscii(char) or char == ';') {
-                break :block req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
+                try req.respond(ERROR_TEXT, .{ .status = .not_acceptable });
             };
-            tasks.addTask(alloc, task, assignee) catch |e| break :block e;
-            tasks.saveToFile(io, alloc) catch |e| break :block e;
-            break :block req.respond(task, .{});
+            try tasks.addTask(alloc, task, assignee);
+            try tasks.saveToFile(io, alloc);
+            try req.respond(task, .{});
         },
-        hash("/listtasks") => block: {
+        hash("/listtasks") => {
             var allocating = std.Io.Writer.Allocating.init(alloc);
             defer allocating.deinit();
             const writer = &allocating.writer;
-            tasks.listTasks(writer) catch |e| break :block e;
-            break :block req.respond(writer.buffered(), .{});
+            try tasks.listTasks(writer);
+            try req.respond(writer.buffered(), .{});
         },
-        else => req.respond("", .{ .status = .not_found }),
-    };
-    result catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-        return;
-    };
+        else => try req.respond("", .{ .status = .not_found }),
+    }
 }
