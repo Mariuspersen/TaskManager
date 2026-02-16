@@ -47,6 +47,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 }
 
+fn timeoutConnection(
+    io: std.Io,
+    s: net.Stream,
+) !void {
+    defer s.close(io);
+    const to = try std.Io.Timeout.toDurationFromNow(.{ .duration = .{
+        .raw = .fromSeconds(5),
+        .clock = std.Io.Clock.real,
+    } }, io) orelse return error.NullDuration;
+    var timeout = io.async(std.Io.Clock.Duration.sleep, .{
+        to,
+        io,
+    });
+    try timeout.await(io);
+}
+
 fn handleConnection(
     io: std.Io,
     alloc: Allocator,
@@ -54,7 +70,16 @@ fn handleConnection(
     tasks: *Tasks,
     w: *std.Io.Writer,
 ) void {
-    defer s.close(io);
+    var to = io.async(timeoutConnection, .{ io, s });
+    defer _ = to.cancel(io) catch |e| {
+        switch (e) {
+            error.Canceled => {},
+            else => {
+                w.print(ERROR_FMT, .{@errorName(e)}) catch {};
+                w.flush() catch {};
+            },
+        }
+    };
 
     var s_read_buf: [4096]u8 = undefined;
     var s_write_buf: [4096]u8 = undefined;
