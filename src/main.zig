@@ -34,10 +34,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer server.deinit(io);
     while (true) {
         var accept = io.async(net.Server.accept, .{ &server, io });
-        defer _ = accept.cancel(io) catch |e| {
-            stderr.print(ERROR_FMT, .{@errorName(e)}) catch {};
-            stderr.flush() catch {};
-        };
+        defer _ = accept.cancel(io) catch {};
         const stream = accept.await(io) catch |e| {
             stderr.print(ERROR_FMT, .{@errorName(e)}) catch {};
             stderr.flush() catch {};
@@ -46,7 +43,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         group.async(
             io,
             handleConnectionWithTimeout,
-            .{ io, alloc, stream, &tasks, stderr },
+            .{ io, alloc, stream, &tasks },
         );
     }
 }
@@ -56,51 +53,33 @@ fn handleConnectionWithTimeout(
     alloc: Allocator,
     s: net.Stream,
     tasks: *Tasks,
-    w: *std.Io.Writer,
 ) void {
-    var conn = io.concurrent(
-        handleConnection,
-        .{ io, alloc, s, tasks },
-    ) catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-        return;
-    };
-    defer conn.cancel(io) catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-    };
-    var timeout = io.concurrent(
-        timeoutConnection,
-        .{ io, &conn },
-    ) catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-        return;
-    };
-    timeout.await(io) catch |e| {
-        w.print(ERROR_FMT, .{@errorName(e)}) catch {};
-        w.flush() catch {};
-        return;
-    };
+    var conn = io.async(handleConnection, .{ io, alloc, &s, tasks });
+    defer _ = conn.cancel(io) catch {};
+    var timeout = io.async(timeoutConnection, .{io, &s});
+    defer _ = timeout.cancel(io) catch {};
+    _ = std.Io.select(io, .{
+        &conn,
+        &timeout,
+    });
 }
 
 fn timeoutConnection(
     io: std.Io,
-    future: *std.Io.Future(@typeInfo(@TypeOf(handleConnection)).@"fn".return_type.?),
+    s: *const net.Stream,
 ) !void {
     const to = try std.Io.Timeout.toDurationFromNow(.{ .duration = .{
         .raw = .fromSeconds(Config.secs_timeout),
         .clock = std.Io.Clock.real,
     } }, io) orelse return error.NullDuration;
     try to.sleep(io);
-    try future.cancel(io);
+    s.close(io);
 }
 
 fn handleConnection(
     io: std.Io,
     alloc: Allocator,
-    s: net.Stream,
+    s: *const net.Stream,
     tasks: *Tasks,
 ) !void {
     defer s.close(io);
