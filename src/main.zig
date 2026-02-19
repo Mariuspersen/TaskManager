@@ -1,18 +1,12 @@
 const std = @import("std");
-const net = std.Io.net;
-
+const Tasks = @import("tasks.zig");
 const Config = @import("config");
 
+const net = std.Io.net;
 const Allocator = std.mem.Allocator;
-const Cancelable = std.Io.Cancelable;
-
 const hash = std.hash.Crc32.hash;
-
 const ERROR_FMT = "ERROR: {s}\n";
 
-const Tasks = @import("tasks.zig");
-
-const address = net.IpAddress.parse(Config.ip, Config.port) catch |err| @compileError(err);
 pub fn main(init: std.process.Init.Minimal) !void {
     const alloc = std.heap.smp_allocator;
 
@@ -22,29 +16,25 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var group = std.Io.Group.init;
     defer group.cancel(io);
 
-    const stderr_buf = try alloc.alloc(u8, 1024);
-    defer alloc.free(stderr_buf);
-    var stderr_writer = std.Io.File.stderr().writer(io, stderr_buf);
-    const stderr = &stderr_writer.interface;
-
     var tasks = Tasks.initFromFile(io, alloc) catch try Tasks.init(alloc);
     defer tasks.deinit(alloc);
 
+    const address = try net.IpAddress.resolve(io, Config.ip, Config.port);
     var server = try address.listen(io, .{ .reuse_address = true });
     defer server.deinit(io);
-    while (true) {
-        var accept = io.async(net.Server.accept, .{ &server, io });
-        defer _ = accept.cancel(io) catch {};
-        const stream = accept.await(io) catch |e| {
-            stderr.print(ERROR_FMT, .{@errorName(e)}) catch {};
-            stderr.flush() catch {};
-            continue;
-        };
-        group.async(
+    while (server.accept(io)) |s| {
+        try group.concurrent(
             io,
             handleConnectionWithTimeout,
-            .{ io, alloc, stream, &tasks },
+            .{ io, alloc, s, &tasks },
         );
+    } else |e| {
+        var buffer: [64]u8 = undefined;
+        const stderr = io.lockStderr(&buffer, null) catch return;
+        stderr.file_writer.interface.print(
+            ERROR_FMT,
+            .{@errorName(e)},
+        ) catch {};
     }
 }
 
@@ -54,26 +44,44 @@ fn handleConnectionWithTimeout(
     s: net.Stream,
     tasks: *Tasks,
 ) void {
-    var conn = io.async(handleConnection, .{ io, alloc, &s, tasks });
-    defer _ = conn.cancel(io) catch {};
-    var timeout = io.async(timeoutConnection, .{io, &s});
+    var buffer: [64]u8 = undefined;
+    var timeout = io.concurrent(
+        std.Io.sleep,
+        .{ io, .fromSeconds(Config.secs_timeout), .cpu_thread },
+    ) catch {
+        const stderr = io.lockStderr(&buffer, null) catch return;
+        stderr.file_writer.interface.print(
+            "ERROR: Unable to concurrently start std.Io.sleep\n",
+            .{},
+        ) catch {};
+        return;
+    };
     defer _ = timeout.cancel(io) catch {};
-    _ = std.Io.select(io, .{
-        &conn,
-        &timeout,
-    }) catch {};
-}
+    var conn = io.concurrent(
+        handleConnection,
+        .{ io, alloc, &s, tasks },
+    ) catch {
+        const stderr = io.lockStderr(&buffer, null) catch return;
+        stderr.file_writer.interface.print(
+            "ERROR: Unable to concurrently start handleConnection\n",
+            .{},
+        ) catch {};
+        return;
+    };
+    defer _ = conn.cancel(io) catch {};
 
-fn timeoutConnection(
-    io: std.Io,
-    s: *const net.Stream,
-) !void {
-    const to = try std.Io.Timeout.toDurationFromNow(.{ .duration = .{
-        .raw = .fromSeconds(Config.secs_timeout),
-        .clock = std.Io.Clock.real,
-    } }, io) orelse return error.NullDuration;
-    try to.sleep(io);
-    s.close(io);
+    const result = std.Io.select(
+        io,
+        .{ &conn, &timeout },
+    );
+    if (result) |_| {} else |e| {
+        const stderr = io.lockStderr(&buffer, null) catch return;
+        stderr.file_writer.interface.print(
+            "ERROR: Something happened during selection {any}\n",
+            .{e},
+        ) catch {};
+        return;
+    }
 }
 
 fn handleConnection(
@@ -82,8 +90,19 @@ fn handleConnection(
     s: *const net.Stream,
     tasks: *Tasks,
 ) !void {
-    defer s.close(io);
-
+    errdefer |e| {
+        var buffer: [64]u8 = undefined;
+        if (io.lockStderr(&buffer, null)) |stderr| {
+            stderr.file_writer.interface.print(
+                ERROR_FMT,
+                .{@errorName(e)},
+            ) catch {};
+        } else |_| {}
+    }
+    defer {
+        s.shutdown(io, .both) catch {};
+        s.close(io);
+    }
     var s_read_buf: [4096]u8 = undefined;
     var s_write_buf: [4096]u8 = undefined;
     var s_reader = s.reader(io, &s_read_buf);

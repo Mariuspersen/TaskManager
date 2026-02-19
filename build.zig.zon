@@ -1,6 +1,6 @@
 .{
     .name = .task_manager,
-    .version = "1.0.0",
+    .version = "1.0.1",
     .minimum_zig_version = "0.16.0-dev.2471+e9eadee00",
     .paths = .{
         "src",
