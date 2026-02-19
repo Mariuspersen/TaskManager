@@ -124,8 +124,12 @@ async function showError(e) {
 async function showlist() {
   const tasks = await sendText("listtasks", "")
 
-  const new_tasklist_element = document.createElement("div");
   const old_tasklist_element = document.getElementById("tasklist");
+  if(tasks.length == 0) {
+    old_tasklist_element.innerHTML = "";
+  }
+  
+  const new_tasklist_element = document.createElement("div");
 
   new_tasklist_element.id = old_tasklist_element.id;
 
